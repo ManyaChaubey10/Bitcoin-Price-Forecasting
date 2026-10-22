@@ -1,0 +1,24 @@
+{
+    "model_order": [
+        1,
+        1,
+        0
+    ],
+    "train_end_date": "2025-12-31",
+    "total_observations": 2722,
+    "adf_p_value_raw": 0.7950955588749439,
+    "adf_p_value_diff": 2.6734560264544105e-16,
+    "aic": 46912.266533665505,
+    "bic": 46924.08404314307,
+    "test_2025_metrics": {
+        "rmse": 2137.34947226519,
+        "mae": 1563.4251987444468,
+        "mape": 1.5712346395022059,
+        "r2": 0.9668019298161055,
+        "directional_accuracy_pct": 48.484848484848484
+    },
+    "forecast_90d_end_date": "2026-03-30",
+    "forecast_90d_end_price": 88375.14769757954,
+    "forecast_90d_lower_ci": 64496.446245557745,
+    "forecast_90d_upper_ci": 112253.84914960133
+}
