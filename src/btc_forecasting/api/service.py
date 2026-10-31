@@ -28,6 +28,10 @@ class ModelUnavailableError(RuntimeError):
     """The requested model is not implemented or its dependency is missing."""
 
 
+class ForecastUnavailableError(RuntimeError):
+    """An implemented model cannot produce a forecast for the current input."""
+
+
 def data_path() -> Path:
     """Return the configured dataset path or the repository's current CSV.
 
@@ -122,8 +126,8 @@ def create_forecast(request: ForecastRequest) -> ForecastResponse:
         order = _saved_arima_order()
         try:
             predicted, lower, upper = forecast_arima(close, request.horizon_days, order=order)
-        except Exception as exc:
-            raise DataUnavailableError(f"ARIMA forecast failed: {exc}") from exc
+        except (ValueError, RuntimeError, np.linalg.LinAlgError, FloatingPointError) as exc:
+            raise ForecastUnavailableError(f"ARIMA forecast failed: {exc}") from exc
         predicted_values = predicted.to_numpy(dtype=float)
     else:
         raise ModelUnavailableError(f"The {request.model} model is not implemented for serving yet.")

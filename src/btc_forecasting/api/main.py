@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from .schemas import ForecastRequest, ForecastResponse, HealthResponse, ModelListResponse
 from .service import (
     DataUnavailableError,
+    ForecastUnavailableError,
     ModelUnavailableError,
     create_forecast,
     data_path,
@@ -37,5 +38,5 @@ def forecast(request: ForecastRequest) -> ForecastResponse:
         return create_forecast(request)
     except ModelUnavailableError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
-    except DataUnavailableError as exc:
+    except (DataUnavailableError, ForecastUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
