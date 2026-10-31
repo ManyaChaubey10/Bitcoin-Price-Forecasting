@@ -16,6 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2.7,<3",
+    "uvicorn[standard]>=0.30,<1",
+]
 notebooks = [
     "ipykernel>=6.29,<8",
     "jupyter>=1,<2",
