@@ -9,10 +9,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from ..data import load_ohlcv_csv
 from ..models.arima import forecast_arima
-from .schemas import ForecastPoint, ForecastRequest, ForecastResponse, ModelStatus
+from .schemas import (
+    ForecastPoint,
+    ForecastRequest,
+    ForecastResponse,
+    ModelStatus,
+    ReadinessResponse,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATA_PATH = PROJECT_ROOT / "data" / "bitcoin_data.csv"
@@ -106,8 +113,8 @@ def _saved_arima_order() -> tuple[int, int, int]:
     return tuple(raw_order)  # type: ignore[return-value]
 
 
-def create_forecast(request: ForecastRequest) -> ForecastResponse:
-    """Build a response from the local historical snapshot and chosen model."""
+def _load_history() -> tuple[Path, pd.DataFrame]:
+    """Load and validate the configured daily OHLCV history."""
     path = data_path()
     if not path.is_file():
         raise DataUnavailableError(
@@ -117,6 +124,23 @@ def create_forecast(request: ForecastRequest) -> ForecastResponse:
         history = load_ohlcv_csv(path)
     except (OSError, ValueError, KeyError) as exc:
         raise DataUnavailableError(f"Historical BTC data could not be loaded: {exc}") from exc
+    return path, history
+
+
+def check_readiness() -> ReadinessResponse:
+    """Confirm that a valid daily dataset is available to forecast from."""
+    path, history = _load_history()
+    return ReadinessResponse(
+        status="ready",
+        data_source=path.name,
+        history_start=history.index[0].date(),
+        history_end=history.index[-1].date(),
+    )
+
+
+def create_forecast(request: ForecastRequest) -> ForecastResponse:
+    """Build a response from the local historical snapshot and chosen model."""
+    path, history = _load_history()
 
     close = history["Close"].astype(float)
     if close.empty:

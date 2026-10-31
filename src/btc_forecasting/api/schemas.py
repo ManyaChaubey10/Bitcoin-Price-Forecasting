@@ -51,3 +51,10 @@ class ModelListResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     data_available: bool
+
+
+class ReadinessResponse(BaseModel):
+    status: Literal["ready"]
+    data_source: str
+    history_start: date
+    history_end: date

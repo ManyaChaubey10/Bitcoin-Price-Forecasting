@@ -2,11 +2,18 @@
 
 from fastapi import FastAPI, HTTPException
 
-from .schemas import ForecastRequest, ForecastResponse, HealthResponse, ModelListResponse
+from .schemas import (
+    ForecastRequest,
+    ForecastResponse,
+    HealthResponse,
+    ModelListResponse,
+    ReadinessResponse,
+)
 from .service import (
     DataUnavailableError,
     ForecastUnavailableError,
     ModelUnavailableError,
+    check_readiness,
     create_forecast,
     data_path,
     list_models,
@@ -23,6 +30,15 @@ app = FastAPI(
 def health() -> HealthResponse:
     """Report API process health and whether the configured data file exists."""
     return HealthResponse(status="ok", data_available=data_path().is_file())
+
+
+@app.get("/ready", response_model=ReadinessResponse, tags=["system"])
+def readiness() -> ReadinessResponse:
+    """Report whether valid historical data is available for forecasting."""
+    try:
+        return check_readiness()
+    except DataUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/models", response_model=ModelListResponse, tags=["forecasting"])

@@ -16,6 +16,7 @@ The interactive API description is available at `http://127.0.0.1:8000/docs` whi
 ## Endpoints
 
 - `GET /health` reports process health and whether the configured data file exists.
+- `GET /ready` loads and validates the configured daily OHLCV data; it returns `503` if the API cannot serve forecasts from that dataset.
 - `GET /api/v1/models` lists model implementation and dependency readiness.
 - `POST /api/v1/forecast` accepts a BTC-USD model name and a one-to-90-day horizon.
 
