@@ -39,3 +39,12 @@ xgboost:
   colsample_bytree: 0.8
   random_state: 42
   selection_metric: rmse
+
+arima:
+  start_p: 0
+  start_q: 0
+  max_p: 5
+  max_q: 5
+  d: 1
+  seasonal: false
+  stepwise: true

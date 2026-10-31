@@ -15,6 +15,7 @@ import yaml
 from btc_forecasting.artifacts import save_experiment_artifacts
 from btc_forecasting.evaluation import compare_predictions
 from btc_forecasting.metrics import evaluate_predictions, persistence_predictions
+from btc_forecasting.models.arima import RollingARIMAForecaster
 from btc_forecasting.models.xgboost_model import XGBoostForecaster
 from btc_forecasting.splitting import split_from_config
 
@@ -72,6 +73,46 @@ def _package_version(name: str) -> str:
         return "not-installed"
 
 
+def _select_arima_order(
+    training_close: pd.Series,
+    settings: dict[str, Any],
+) -> tuple[tuple[int, int, int], float]:
+    """Select ARIMA order by AIC using training-period closes only."""
+    from pmdarima import auto_arima
+
+    selected = auto_arima(
+        training_close.asfreq("D"),
+        start_p=int(settings["start_p"]),
+        start_q=int(settings["start_q"]),
+        max_p=int(settings["max_p"]),
+        max_q=int(settings["max_q"]),
+        d=int(settings["d"]),
+        seasonal=bool(settings["seasonal"]),
+        stepwise=bool(settings["stepwise"]),
+        suppress_warnings=True,
+        error_action="ignore",
+        trace=False,
+    )
+    order = tuple(int(value) for value in selected.order)
+    return order, float(selected.aic())
+
+
+def _rolling_arima_predictions(
+    history: pd.Series,
+    rows: pd.DataFrame,
+    *,
+    order: tuple[int, int, int],
+    target_column: str,
+) -> pd.Series:
+    """Predict each target in order, then update state with its actual close."""
+    model = RollingARIMAForecaster(order).fit(history)
+    values: list[float] = []
+    for _, row in rows.iterrows():
+        values.append(model.forecast_next())
+        model.observe(row["Target_Date"], float(row[target_column]))
+    return pd.Series(values, index=rows.index, name="arima_prediction")
+
+
 def run_experiment(config_path: Path, data_override: Path | None, output_root: Path) -> Path:
     """Run validation selection and a final held-out XGBoost comparison."""
     config = _load_config(config_path)
@@ -82,8 +123,11 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
         xgb_config = config["xgboost"]
         candidate_estimators = xgb_config["n_estimators_candidates"]
         selection_metric = xgb_config["selection_metric"]
+        arima_config = config["arima"]
     except (KeyError, TypeError) as exc:
-        raise ValueError("Config must define data.features_file, target, and xgboost settings") from exc
+        raise ValueError(
+            "Config must define data.features_file, target, XGBoost, and ARIMA settings"
+        ) from exc
 
     if not isinstance(candidate_estimators, list) or not candidate_estimators:
         raise ValueError("xgboost.n_estimators_candidates must be a non-empty list")
@@ -110,6 +154,27 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
     train = partitions["train"]
     validation = partitions["validation"]
     test = partitions["test"]
+
+    # Order selection sees training-period closes only. Each target-date
+    # partition is forecast sequentially with actual closes appended afterward.
+    train_end = pd.Timestamp(config["split"]["train_end"])
+    validation_end = pd.Timestamp(config["split"]["validation_end"])
+    training_close = pd.to_numeric(
+        frame.loc[frame.index <= train_end, "Close"], errors="raise"
+    )
+    arima_order, arima_training_aic = _select_arima_order(training_close, arima_config)
+    arima_validation_prediction = _rolling_arima_predictions(
+        training_close,
+        validation,
+        order=arima_order,
+        target_column=target_column,
+    )
+    arima_validation_metrics = evaluate_predictions(
+        actual_next_close=validation[target_column],
+        predicted_next_close=arima_validation_prediction,
+        previous_close=validation["Close"],
+    )
+
     common_params = {
         key: xgb_config[key]
         for key in (
@@ -147,12 +212,25 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
     final_model = XGBoostForecaster(n_estimators=best_estimators, **common_params)
     final_model.fit(development[feature_columns], development[target_column])
     xgb_prediction = final_model.predict(test[feature_columns])
+
+    # The first test forecast is made after the 2024-12-31 close is known.
+    # That close is included in ARIMA history, but its 2025-01-01 target is not.
+    development_close = pd.to_numeric(
+        frame.loc[frame.index <= validation_end, "Close"], errors="raise"
+    )
+    arima_test_prediction = _rolling_arima_predictions(
+        development_close,
+        test,
+        order=arima_order,
+        target_column=target_column,
+    )
     baseline_prediction = persistence_predictions(test["Close"])
     metrics = compare_predictions(
         actual_next_close=test[target_column],
         previous_close=test["Close"],
         predictions={
             "persistence": baseline_prediction,
+            "arima": arima_test_prediction,
             "xgboost": xgb_prediction,
         },
     )
@@ -162,6 +240,7 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
             "actual_next_close_usd": test[target_column],
             "previous_close_usd": test["Close"],
             "persistence_prediction_usd": baseline_prediction,
+            "arima_prediction_usd": arima_test_prediction,
             "xgboost_prediction_usd": xgb_prediction,
         },
         index=test.index,
@@ -185,16 +264,26 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
             "test": len(test),
         },
         "feature_columns": feature_columns,
+        "validation_metrics": {"arima": arima_validation_metrics},
         "model": {
-            "name": "xgboost",
-            "selected_n_estimators": best_estimators,
-            "selection_metric": selection_metric,
-            "fit_dates": {
-                "first_decision_date": development.index[0],
-                "last_decision_date": development.index[-1],
+            "xgboost": {
+                "selected_n_estimators": best_estimators,
+                "selection_metric": selection_metric,
+                "fit_dates": {
+                    "first_decision_date": development.index[0],
+                    "last_decision_date": development.index[-1],
+                },
+                "refit_during_test": False,
+                "parameters": {**common_params, "n_estimators": best_estimators},
             },
-            "refit_during_test": False,
-            "parameters": {**common_params, "n_estimators": best_estimators},
+            "arima": {
+                "order": arima_order,
+                "order_selection": "AIC on training closes only",
+                "training_aic": arima_training_aic,
+                "refit_during_test": False,
+                "state_updates": "append observed close after each one-step forecast",
+                "settings": arima_config,
+            },
         },
         "software_versions": {
             "python": platform.python_version(),
@@ -202,6 +291,8 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
             "pandas": _package_version("pandas"),
             "PyYAML": _package_version("PyYAML"),
             "xgboost": _package_version("xgboost"),
+            "statsmodels": _package_version("statsmodels"),
+            "pmdarima": _package_version("pmdarima"),
         },
     }
     return save_experiment_artifacts(
