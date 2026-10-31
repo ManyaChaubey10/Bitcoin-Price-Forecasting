@@ -1,6 +1,6 @@
 # Forecasting API
 
-This is a local development API for the BTC-USD project. It serves forecasts from the repository's current historical CSV; it does not download fresh market data. The configured default is `data/bitcoin_data.csv`. Set `BTC_FORECASTING_DATA` to use another CSV with a `Date` column and valid daily OHLCV columns.
+This is a local development API for the BTC-USD project. It serves forecasts from the repository's current historical CSV; it does not download fresh market data. The configured default is `data/bitcoin_data.csv`. Set `BTC_FORECASTING_DATA` to use another CSV with a `Date` column and valid daily OHLCV columns. Relative values are resolved from the repository root; absolute paths are used as given.
 
 ## Install and run
 

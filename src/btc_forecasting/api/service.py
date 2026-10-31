@@ -29,9 +29,17 @@ class ModelUnavailableError(RuntimeError):
 
 
 def data_path() -> Path:
-    """Return the configured dataset path or the repository's current CSV."""
+    """Return the configured dataset path or the repository's current CSV.
+
+    Relative paths in ``BTC_FORECASTING_DATA`` are anchored at the project
+    root so the selected dataset does not depend on the server's working dir.
+    """
     configured = os.environ.get(DATA_ENV_VAR)
-    return Path(configured).expanduser() if configured else DEFAULT_DATA_PATH
+    if not configured:
+        return DEFAULT_DATA_PATH
+
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def list_models() -> list[ModelStatus]:
