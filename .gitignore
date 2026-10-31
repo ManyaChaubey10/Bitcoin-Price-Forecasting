@@ -1,0 +1,15 @@
+# Bytecode and package/build outputs
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Local environments and secrets
+.venv/
+.venv-*/
+venv/
+.env
+
+# Generated pipeline outputs; retain source data and intentional figures unless explicitly moved here
+artifacts/

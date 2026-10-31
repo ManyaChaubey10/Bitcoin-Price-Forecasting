@@ -1,0 +1,37 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../scripts"
+		},
+		{
+			"path": "../src"
+		},
+		{
+			"path": "../tests"
+		},
+		{
+			"path": "../arima"
+		},
+		{
+			"path": "../data"
+		},
+		{
+			"path": "../plots"
+		},
+		{
+			"path": "../scratch"
+		},
+		{
+			"path": "../.venv"
+		},
+		{
+			"path": "../xgboost"
+		},
+		{
+			"path": "../lstm"
+		}
+	]
+}

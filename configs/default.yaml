@@ -1,0 +1,31 @@
+# Default experiment configuration. Paths are relative to the repository root.
+data:
+  symbol: BTC-USD
+  source: yfinance
+  start_date: "2018-01-01"
+  end_date_exclusive: "2026-01-01"
+  timezone: UTC
+  raw_dir: data/raw
+  processed_dir: data/processed
+
+target:
+  column: Target_Next_Close
+  horizon_days: 1
+  decision_time: after_daily_close
+
+split:
+  train_end: "2023-12-31"
+  validation_start: "2024-01-01"
+  validation_end: "2024-12-31"
+  test_start: "2025-01-01"
+  test_end: "2025-12-31"
+
+evaluation:
+  strategy: rolling_origin
+  horizon_days: 1
+  refit_model_during_test: false
+  baseline: persistence
+  metrics:
+    - mae
+    - rmse
+    - directional_accuracy
