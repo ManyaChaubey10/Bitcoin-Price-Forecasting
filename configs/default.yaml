@@ -7,6 +7,7 @@ data:
   timezone: UTC
   raw_dir: data/raw
   processed_dir: data/processed
+  features_file: data/bitcoin_features.csv
 
 target:
   column: Target_Next_Close
@@ -29,3 +30,12 @@ evaluation:
     - mae
     - rmse
     - directional_accuracy
+
+xgboost:
+  n_estimators_candidates: [300, 500, 800]
+  max_depth: 5
+  learning_rate: 0.03
+  subsample: 0.8
+  colsample_bytree: 0.8
+  random_state: 42
+  selection_metric: rmse
