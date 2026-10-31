@@ -115,14 +115,43 @@ def create_forecast(request: ForecastRequest) -> ForecastResponse:
     else:
         raise ModelUnavailableError(f"The {request.model} model is not implemented for serving yet.")
 
+    predicted_values = np.asarray(predicted_values, dtype=float)
+    if predicted_values.ndim != 1 or len(predicted_values) != request.horizon_days:
+        raise DataUnavailableError(
+            "The selected model returned a forecast with an unexpected length."
+        )
     if not np.isfinite(predicted_values).all():
         raise DataUnavailableError("The selected model returned a non-finite forecast.")
+
+    lower_values = upper_values = None
+    if lower is not None or upper is not None:
+        if lower is None or upper is None:
+            raise DataUnavailableError(
+                "The selected model returned an incomplete confidence interval."
+            )
+        lower_values = np.asarray(lower, dtype=float)
+        upper_values = np.asarray(upper, dtype=float)
+        if (
+            lower_values.ndim != 1
+            or upper_values.ndim != 1
+            or len(lower_values) != request.horizon_days
+            or len(upper_values) != request.horizon_days
+        ):
+            raise DataUnavailableError(
+                "The selected model returned confidence intervals with an unexpected length."
+            )
+        if not np.isfinite(lower_values).all() or not np.isfinite(upper_values).all():
+            raise DataUnavailableError(
+                "The selected model returned non-finite confidence intervals."
+            )
+        if np.any(lower_values > upper_values):
+            raise DataUnavailableError(
+                "The selected model returned invalid confidence interval bounds."
+            )
 
     start = history.index[0]
     last_date = history.index[-1]
     future_dates = [last_date.date() + timedelta(days=step) for step in range(1, request.horizon_days + 1)]
-    lower_values = lower.to_numpy(dtype=float) if lower is not None else None
-    upper_values = upper.to_numpy(dtype=float) if upper is not None else None
     points = [
         ForecastPoint(
             date=forecast_date,
