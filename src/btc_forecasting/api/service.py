@@ -44,9 +44,18 @@ def data_path() -> Path:
 
 def list_models() -> list[ModelStatus]:
     """Report implemented models separately from optional runtime readiness."""
-    arima_installed = (
-        importlib.util.find_spec("statsmodels") is not None and ARIMA_ORDER_PATH.is_file()
-    )
+    arima_ready = False
+    if importlib.util.find_spec("statsmodels") is None:
+        arima_detail = "Install the project's arima dependency group to enable ARIMA."
+    else:
+        try:
+            _saved_arima_order()
+        except ModelUnavailableError as exc:
+            arima_detail = str(exc)
+        else:
+            arima_ready = True
+            arima_detail = "Fits the saved ARIMA order to the available close history."
+
     return [
         ModelStatus(
             name="persistence",
@@ -57,12 +66,8 @@ def list_models() -> list[ModelStatus]:
         ModelStatus(
             name="arima",
             implemented=True,
-            ready=arima_installed,
-            detail=(
-                "Fits the saved ARIMA order to the available close history."
-                if arima_installed
-                else "ARIMA needs statsmodels and the saved model-order file to be available."
-            ),
+            ready=arima_ready,
+            detail=arima_detail,
         ),
         ModelStatus(
             name="xgboost",
