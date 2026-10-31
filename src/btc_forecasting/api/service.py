@@ -91,14 +91,19 @@ def list_models() -> list[ModelStatus]:
 def _saved_arima_order() -> tuple[int, int, int]:
     try:
         metrics = json.loads(ARIMA_ORDER_PATH.read_text(encoding="utf-8-sig"))
-        order = tuple(int(value) for value in metrics["model_order"])
+        raw_order = metrics["model_order"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ModelUnavailableError(
             "The saved ARIMA model order is missing or invalid."
         ) from exc
-    if len(order) != 3 or any(value < 0 for value in order):
+
+    if (
+        not isinstance(raw_order, list)
+        or len(raw_order) != 3
+        or any(type(value) is not int or value < 0 for value in raw_order)
+    ):
         raise ModelUnavailableError("The saved ARIMA model order must contain three non-negative integers.")
-    return order  # type: ignore[return-value]
+    return tuple(raw_order)  # type: ignore[return-value]
 
 
 def create_forecast(request: ForecastRequest) -> ForecastResponse:
