@@ -1,120 +1,60 @@
-# Project Architecture
+# Architecture and implementation status
 
-## Purpose
+## Design
 
-Build a reproducible daily BTC-USD next-close forecasting pipeline for ARIMA, XGBoost, and LSTM. Keep exploratory notebooks available, while moving reusable data and modeling logic into importable Python modules. The target layout below is a proposal; the current implementation snapshot and file mapping distinguish completed work from remaining work.
-
-## Current implementation snapshot
-
-- The FastAPI backend serves persistence and ARIMA forecasts from the configured local OHLCV CSV. When an experiment bundle and matching processed feature table are available, it also serves one-day XGBoost and LSTM forecasts. It exposes process health, dataset readiness, and model status endpoints; it does not fetch current prices.
-- `models/arima.py` provides a fixed-order ARIMA forecast adapter. The API reads its order from the existing `arima/arima_metrics.json` file and fits it to the configured close-price history for each request.
-- `models/xgboost_model.py` provides fit/predict and native JSON save/load adapters with target-column and feature-schema checks; the experiment runner saves a deployment bundle for API inference.
-- `evaluation.py` compares named prediction series with shared metrics and requires identical chronological dates. Generic rolling-origin orchestration is not implemented; the current script handles the ARIMA rolling state explicitly.
-- `models/lstm.py` provides a sequence regressor with scalers fit only on the supplied training sequences, plus local bundle save/load. The experiment runner predicts log returns and converts them back to close prices.
-- `scripts/run_experiment.py` compares persistence, ARIMA, XGBoost, and LSTM. It selects ARIMA order using training-period AIC, selects XGBoost estimators and LSTM epochs using 2024 validation data, then evaluates all four on the same 2025 target-date test rows.
-- `artifacts.py` writes predictions, metrics, validation scores, run metadata, and XGBoost/LSTM deployment bundles to a new run directory. Deployment bundles are fit on all available labeled rows after the held-out test scores are computed; do not use them to reproduce the 2025 test predictions.
-
-## Target layout
+The project separates ingestion, feature generation, model training, evaluation, routing, serving, and presentation. Existing notebooks, model outputs, and source datasets remain in place. The API loads saved model bundles; application startup does not retrain them.
 
 ```text
-Crypto/
-├── README.md
-├── ARCHITECTURE.md
-├── pyproject.toml                 # package metadata and bounded runtime dependencies
-├── configs/
-│   └── default.yaml               # dates, target, feature groups, model settings
-├── data/
-│   ├── raw/                       # immutable downloaded OHLCV snapshots
-│   └── processed/                 # canonical feature/target dataset
-├── notebooks/
-│   ├── preprocessing_exploration.ipynb
-│   └── model_analysis.ipynb       # optional reports using saved run artifacts
-├── src/
-│   └── btc_forecasting/
-│       ├── __init__.py
-│       ├── config.py              # load and validate configuration
-│       ├── data.py                # download/load, schema and date-gap checks
-│       ├── features.py            # causal indicators, lags and next-day target
-│       ├── splitting.py            # chronological train/validation/test windows
-│       ├── metrics.py             # shared regression and direction metrics
-│       ├── evaluation.py          # common rolling-origin evaluation interface
-│       ├── artifacts.py           # save predictions, metrics and run metadata
-│       └── models/
-│           ├── __init__.py
-│           ├── arima.py
-│           ├── xgboost.py
-│           └── lstm.py
-├── scripts/
-│   ├── prepare_data.py
-│   └── run_experiment.py
-├── tests/
-│   ├── test_data.py
-│   ├── test_features.py
-│   ├── test_splitting.py
-│   └── test_no_leakage.py
-├── artifacts/                     # generated run outputs; exclude large files from Git
-│   ├── metrics/
-│   ├── predictions/
-│   └── figures/
-└── legacy/                         # optional holding place during a later migration only
+OHLCV CSV -> data.py -> features.py -> chronological experiment
+                                      |-> ARIMA adapter
+                                      |-> XGBoost adapter
+                                      |-> LSTM adapter
+                                      |-> persistence baseline
+                    validation artifacts -> selection.py -> FastAPI -> React/Vite
+                    final 2026 artifacts ---------------------> read-only display
 ```
 
-Do not move the existing files as part of this architecture decision. Later migration can copy or refactor them in small, reviewable steps; retain the existing notebooks and outputs until replacements are checked.
+### Components
 
-## Responsibilities and design decisions
+- `src/btc_forecasting/data.py` validates dated OHLCV inputs.
+- `src/btc_forecasting/features.py` builds lagged/rolling/technical inputs and the next-day supervised targets.
+- `src/btc_forecasting/splitting.py` creates chronological date partitions; `metrics.py` and `evaluation.py` score aligned predictions.
+- `src/btc_forecasting/models/` contains independent ARIMA, XGBoost, and LSTM implementations.
+- `scripts/run_experiment.py` selects settings on validation data, refits selected models through the configured 2025 boundary, and saves a unique run.
+- `configs/model_selection.json` records the router's validation evidence and source run provenance.
+- `src/btc_forecasting/selection.py` ranks only matching validation records by objective and horizon, honors manual choices, and falls back to persistence when a learned-model gain has not been established as reliable.
+- `src/btc_forecasting/api/` serves forecasts, performance, history, diagnostics, and saved final-evaluation results.
+- `frontend/` is the React/Vite dashboard and communicates with FastAPI through the Vite `/api` proxy.
+- `artifacts/runs/` contains ignored generated run outputs and existing fitted model bundles. The registry pins model serving to specific artifact runs.
 
-- **Keep notebooks for exploration and explanation.** The existing preprocessing and ARIMA notebooks contain useful work. Core feature and model logic should eventually live in `src/` so notebooks and command-line runs share one implementation.
-- **Separate raw data from derived data.** Preserve the downloaded OHLCV snapshot under `data/raw/`; store the engineered table under `data/processed/`. This resolves the current ambiguity where both CSV names contain the same processed data and there is no raw snapshot in the exports.
-- **Use one configuration and one run entry point.** Dates, target, feature choices, and model settings belong in `configs/default.yaml`. The script should record the effective configuration with each run so results can be reproduced.
-- **Share time handling and evaluation.** All models should use the same chronological splits, prediction dates, forecast horizon, metrics, and baseline. Model-specific sequence construction or ARIMA state updates stay inside their model adapters.
-- **Keep learned preprocessing inside the split boundary.** Any scaler or other fitted transform must be fit using training data only. Feature columns must exclude every target column. Unit tests should cover these boundaries before relying on scores.
-- **Save predictions as well as summary scores.** A per-date prediction file allows direct comparison and audit of missing dates or model differences. Store run date, source data range, split cutoffs, package versions, configuration, and random seeds alongside scores.
-- **Delay the app and deployment.** Build an application only after a documented command can recreate the data, models, predictions, and metrics from a clean environment.
+## Data and evaluation contract
 
-## Mapping of current files
-
-| Current item | Current state | Eventual role |
+| Partition | Target-date window | Use |
 |---|---|---|
-| `preprocessing.ipynb` | Implemented download, features, targets, plots and CSV exports | Keep as exploration; move reusable logic into `data.py` and `features.py` |
-| `arima/arima.ipynb` | Implemented order selection, backtest, diagnostics and forecast | Keep as analysis; move reusable model/evaluation code into `models/arima.py` and shared modules |
-| `scratch/train_arima.py` | Duplicates much of ARIMA workflow | Refactor into the shared run entry point, then retire duplicate logic after parity is checked |
-| `scratch/build_arima_notebook.py` | Generates the ARIMA notebook | Keep only if notebook generation remains a deliberate workflow; otherwise archive after confirming it is not needed |
-| `src/btc_forecasting/api/` | Local FastAPI health, readiness, model-status, persistence/ARIMA, and one-day XGBoost/LSTM endpoints | Add multi-day ML forecasting after defining how future features are generated |
-| `src/btc_forecasting/evaluation.py` | Shared metric comparison on exactly aligned prediction dates | Extend with rolling-origin orchestration and prediction records |
-| `src/btc_forecasting/models/xgboost_model.py` | Fit/predict and native JSON save/load adapter with feature-schema checks | Preserve schema/version compatibility as artifacts evolve |
-| `src/btc_forecasting/models/arima.py` | Fixed-order forecast with prediction intervals | Reproduce notebook evaluation using the shared protocol |
-| `src/btc_forecasting/models/lstm.py` | Sequence LSTM with training-only feature and target scaling; local bundle save/load | Keep the sequence builder and inference contract shared with the experiment runner |
-| `scripts/run_experiment.py` | ARIMA/XGBoost/LSTM/persistence comparison with validation selection, test artifacts, and separate deployment refits | Extend with formal artifact versioning as contracts stabilize |
-| `src/btc_forecasting/artifacts.py` | Writes predictions, scores, run metadata, and model bundles to unique run directories | Add reproducibility locks and artifact migrations when formats change |
-| `xgboost/xgboost.ipynb` | Empty (0 bytes) | Optional analysis notebook; model implementation belongs in `models/xgboost.py` |
-| `lstm/lstm.ipynb` | Empty (0 bytes) | Optional analysis notebook; model implementation belongs in `models/lstm.py` |
-| `bitcoin_data.csv`, `bitcoin_features.csv` at root and in `data/` | Four identical processed CSV copies | Migrate to one canonical processed path; preserve old copies until the new pipeline is verified |
-| `arima/arima_metrics.json` | Existing ARIMA metrics | Retain as historical output; new runs should use a consistent artifact format |
-| `plots/` | Existing preprocessing and ARIMA plots | Preserve; later runs save plots with their metrics and predictions under `artifacts/` |
-| `.venv/` | Local Python 3.14 environment, currently without project dependencies | Keep local and out of Git; use a separate Python 3.12 environment for the declared model stack |
-| `README.md` | Project overview, proposed protocol, environment setup, and implementation sequence | Keep as quick start and user-facing project guide |
+| Training | 2018-01-01–2023-12-31 | Fit candidate configurations |
+| Validation | 2024-01-01–2024-12-31 | Hyperparameter/model selection and routing evidence |
+| Final fit | Through 2025-12-31 | Refit the selected configuration |
+| Final evaluation | 2026 actuals available in the saved dataset | Out-of-sample reporting only |
 
-## Missing pieces before model comparison
+The configured 2026 evaluation window ends November 14, 2026. No 2026 result is included in the router registry. Rolling one-day evaluation means each target is forecast from the immediately preceding observed close; after that close becomes available, it may update forecast state for the next origin. A fixed 365-day forecast instead uses one origin and predicts the entire year without observing intervening closes. These strategies answer different questions.
 
-The package, dependency bounds, and default experiment configuration exist. Data validation, feature engineering, target-date chronological splits, shared metrics, persistence/ARIMA and one-day XGBoost/LSTM API serving, model adapters, aligned-date comparison, and model-bundle artifact persistence are implemented. Formal artifact versioning, automated checks, a canonical raw-to-processed data command, and multi-day ML feature generation remain.
+The saved serving artifacts are final-fit models through 2025. ARIMA updates its stored state with observed closes after its fit boundary without refitting parameters. XGBoost and LSTM use the saved feature contract for one-day predictions. Their future covariates are not synthesized for longer horizons.
 
-1. Install the declared dependencies in a compatible Python 3.12 environment and record a resolved lockfile.
-2. Preserve a raw OHLCV snapshot and define one canonical processed-data output.
-3. Add automated checks for data validation, feature generation, split boundaries, target leakage, and rolling ARIMA updates.
-4. Run and review the four-way ARIMA/XGBoost/LSTM/persistence experiment in a compatible environment; check predictions and metrics before relying on scores.
-5. Version the model bundle formats and define a safe update policy for serving runs.
-## Evaluation contract
+## Current evidence
 
-The current proposed comparison is a one-day-ahead next-close forecast made after the daily candle closes. Train through 2023-12-31, select settings using 2024, and reserve 2025 for final testing. At test time use rolling one-step predictions with fixed learned parameters; update ARIMA's state only as actual closes become available. Compare all models on the same dates against the persistence baseline (`next close = current close`). Report MAE, RMSE, and direction accuracy using each forecast versus the prior observed close. Confirm split boundaries and available dates against the raw source before execution.
+- The registry has validation scores for one-day persistence, ARIMA, XGBoost, and LSTM only.
+- Existing XGBoost and LSTM runs use the existing shared feature table; model-specific ablation has not been run. The application exposes the actual saved features and diagnostics but does not claim they are optimized.
+- No validation results exist for 7-, 14-, or 30-day objectives. The router refuses automatic selection for those horizons. ARIMA and persistence can still produce manual comparison forecasts; the UI marks the absence of validation evidence.
+- For every one-day objective, the current registry does not establish learned-model gains as reliable against persistence. Automatic routing therefore uses the persistence fallback; this does not imply persistence forecasts direction well.
+- No 2024 per-date prediction set for all models is saved. Simple/weighted ensembles have not been validated and remain disabled.
+- Existing 2026 results are available for display only. The API labels them as final evaluation and the routing code does not read them.
 
-## Recommended build order
+## Implementation plan and open work
 
-1. Install dependencies into a Python 3.12 environment and lock the resolved versions.
-2. Implement data validation, raw/processed paths, and feature generation; compare new outputs with the legacy CSVs before changing the existing workflow.
-3. Add automated checks for split boundaries, target leakage, and equal model evaluation windows.
-4. Run and review the current ARIMA/XGBoost/LSTM comparison in a compatible environment.
-5. Add model bundle versioning, loading, and API inference for trained models.
-6. Consider UI and deployment after clean-environment reproducibility is established.
+1. **Feature specialization:** create separate causal feature groups and controlled train/2024-validation ablations for ARIMA (price vs log-return, candidate orders, justified exogenous inputs), XGBoost (price/return, volume, volatility, momentum/technical groups), and LSTM (input groups, lookback, training-only scaling, regularization, early stopping). Store per-date validation predictions and selected settings in unique run folders.
+2. **Horizon study:** evaluate direct, date-aligned 1/7/14/30-day targets with the same training and validation boundaries; define each model's forecast-origin strategy and score every model against persistence. Do not extrapolate scores between horizons.
+3. **Router refresh:** after reviewing those actual 2024 results, replace/add registry records with feature/config IDs and reliability evidence. Refit selected configurations through 2025 into new unique artifact bundles; never overwrite the existing bundles.
+4. **Ensemble check:** calculate average and validation-weighted combinations only from aligned 2024 per-date predictions; include persistence and compare on identical dates. Enable only if it improves validation under a predeclared criterion.
+5. **Verification:** automated API/frontend integration checks, repeatability checks on immutable inputs, and a final untouched 2026 report. Avoid tuning from that final report.
 
-Each step should be reviewed before retiring or moving its corresponding existing work.
-
+This document distinguishes implemented plumbing from the still-required model-specific research. The current app is usable for saved one-day model comparisons, but the full model-specialized, multi-horizon research objective is not yet complete.

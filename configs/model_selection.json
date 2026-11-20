@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "description": "Performance registry built only from the 2024 validation period. No 2026 metrics are included.",
+  "data_protocol": {
+    "training_targets": ["2018-01-01", "2023-12-31"],
+    "validation_targets": ["2024-01-01", "2024-12-31"],
+    "final_fit_targets": ["2018-01-01", "2025-12-31"],
+    "final_evaluation_targets": ["2026-01-01", "2026-11-14"],
+    "routing_uses_final_evaluation": false
+  },
+  "final_evaluation_artifacts": {
+    "purpose": "Display-only final out-of-sample diagnostics; never read by model routing.",
+    "sources": {
+      "arima": "20261115T175407643905Z_notebook_arima_b43f29b3",
+      "xgboost": "20261115T175648962901Z_notebook_xgboost_0c0c883d",
+      "lstm": "20261115T175713292845Z_notebook_lstm_4b67ea32"
+    }
+  },
+  "records": [
+    {
+      "model": "persistence",
+      "objective": "price_mae",
+      "horizon_days": 1,
+      "metric": "mae",
+      "mae": 1334.54853995902,
+      "rmse": 1861.66118024318,
+      "directional_accuracy": 0.0,
+      "validation_period": "2024-01-01/2024-12-31",
+      "source": "Close at decision time; 366 validation targets from bitcoin_features.csv"
+    },
+    {
+      "model": "arima",
+      "objective": "price_mae",
+      "horizon_days": 1,
+      "metric": "mae",
+      "mae": 1331.0738392190863,
+      "rmse": 1859.5571862686304,
+      "directional_accuracy": 0.5,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"order": [2, 1, 1]},
+      "source_run": "20261115T175025231590Z_notebook_arima_6a18a814",
+      "artifact_run": "20261115T175407643905Z_notebook_arima_b43f29b3",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "xgboost",
+      "objective": "price_mae",
+      "horizon_days": 1,
+      "metric": "mae",
+      "mae": 7880.197895321038,
+      "rmse": 13894.91158268073,
+      "directional_accuracy": 0.4808743169398907,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"n_estimators": 300},
+      "source_run": "20261115T175036993531Z_notebook_xgboost_b78853e0",
+      "artifact_run": "20261115T175648962901Z_notebook_xgboost_0c0c883d",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "lstm",
+      "objective": "price_mae",
+      "horizon_days": 1,
+      "metric": "mae",
+      "mae": 1447.7971313555083,
+      "rmse": 2005.5917617995854,
+      "directional_accuracy": 0.5081967213114754,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"epochs": 10, "sequence_length": 30},
+      "source_run": "20261115T175052130335Z_notebook_lstm_56c9f2a2",
+      "artifact_run": "20261115T175713292845Z_notebook_lstm_4b67ea32",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "persistence",
+      "objective": "price_rmse",
+      "horizon_days": 1,
+      "metric": "rmse",
+      "mae": 1334.54853995902,
+      "rmse": 1861.66118024318,
+      "directional_accuracy": 0.0,
+      "validation_period": "2024-01-01/2024-12-31",
+      "source": "Close at decision time; 366 validation targets from bitcoin_features.csv"
+    },
+    {
+      "model": "arima",
+      "objective": "price_rmse",
+      "horizon_days": 1,
+      "metric": "rmse",
+      "mae": 1331.0738392190863,
+      "rmse": 1859.5571862686304,
+      "directional_accuracy": 0.5,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"order": [2, 1, 1]},
+      "source_run": "20261115T175025231590Z_notebook_arima_6a18a814",
+      "artifact_run": "20261115T175407643905Z_notebook_arima_b43f29b3",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "xgboost",
+      "objective": "price_rmse",
+      "horizon_days": 1,
+      "metric": "rmse",
+      "mae": 7880.197895321038,
+      "rmse": 13894.91158268073,
+      "directional_accuracy": 0.4808743169398907,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"n_estimators": 300},
+      "source_run": "20261115T175036993531Z_notebook_xgboost_b78853e0",
+      "artifact_run": "20261115T175648962901Z_notebook_xgboost_0c0c883d",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "lstm",
+      "objective": "price_rmse",
+      "horizon_days": 1,
+      "metric": "rmse",
+      "mae": 1447.7971313555083,
+      "rmse": 2005.5917617995854,
+      "directional_accuracy": 0.5081967213114754,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"epochs": 10, "sequence_length": 30},
+      "source_run": "20261115T175052130335Z_notebook_lstm_56c9f2a2",
+      "artifact_run": "20261115T175713292845Z_notebook_lstm_4b67ea32",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "persistence",
+      "objective": "directional_accuracy",
+      "horizon_days": 1,
+      "metric": "directional_accuracy",
+      "mae": 1334.54853995902,
+      "rmse": 1861.66118024318,
+      "directional_accuracy": 0.0,
+      "validation_period": "2024-01-01/2024-12-31",
+      "source": "Close at decision time; no-change forecast scores 0 under the current sign-based metric"
+    },
+    {
+      "model": "arima",
+      "objective": "directional_accuracy",
+      "horizon_days": 1,
+      "metric": "directional_accuracy",
+      "mae": 1331.0738392190863,
+      "rmse": 1859.5571862686304,
+      "directional_accuracy": 0.5,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"order": [2, 1, 1]},
+      "source_run": "20261115T175025231590Z_notebook_arima_6a18a814",
+      "artifact_run": "20261115T175407643905Z_notebook_arima_b43f29b3",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "xgboost",
+      "objective": "directional_accuracy",
+      "horizon_days": 1,
+      "metric": "directional_accuracy",
+      "mae": 7880.197895321038,
+      "rmse": 13894.91158268073,
+      "directional_accuracy": 0.4808743169398907,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"n_estimators": 300},
+      "source_run": "20261115T175036993531Z_notebook_xgboost_b78853e0",
+      "artifact_run": "20261115T175648962901Z_notebook_xgboost_0c0c883d",
+      "reliable_vs_persistence": false
+    },
+    {
+      "model": "lstm",
+      "objective": "directional_accuracy",
+      "horizon_days": 1,
+      "metric": "directional_accuracy",
+      "mae": 1447.7971313555083,
+      "rmse": 2005.5917617995854,
+      "directional_accuracy": 0.5081967213114754,
+      "validation_period": "2024-01-01/2024-12-31",
+      "configuration": {"epochs": 10, "sequence_length": 30},
+      "source_run": "20261115T175052130335Z_notebook_lstm_56c9f2a2",
+      "artifact_run": "20261115T175713292845Z_notebook_lstm_4b67ea32",
+      "reliable_vs_persistence": false
+    }
+  ],
+  "ensemble": {
+    "validated": false,
+    "method": null,
+    "reason": "Per-date 2024 validation predictions were not saved for all models, so aligned average/weighted forecasts cannot be compared without retraining or reconstructing forecasts. No ensemble is enabled."
+  }
+}

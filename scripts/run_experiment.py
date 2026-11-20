@@ -208,7 +208,6 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
     # Order selection sees training-period closes only. Each target-date
     # partition is forecast sequentially with actual closes appended afterward.
     train_end = pd.Timestamp(config["split"]["train_end"])
-    validation_end = pd.Timestamp(config["split"]["validation_end"])
     training_close = pd.to_numeric(
         frame.loc[frame.index <= train_end, "Close"], errors="raise"
     )
@@ -267,9 +266,16 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
     if best_estimators is None or best_xgb_validation_metrics is None:
         raise RuntimeError("Validation did not select an XGBoost candidate")
 
-    development = pd.concat([train, validation]).sort_index()
+    final_fit_end = pd.Timestamp(config["final_fit"]["target_end"])
+    final_fit = frame.loc[
+        frame["Target_Date"].le(final_fit_end) & frame[target_column].notna()
+    ].copy()
+    if final_fit.empty or final_fit["Target_Date"].max() != final_fit_end:
+        raise ValueError(
+            f"Final-fit labels must be available through {final_fit_end.date()}"
+        )
     final_model = XGBoostForecaster(n_estimators=best_estimators, **common_params)
-    final_model.fit(development[feature_columns], development[target_column])
+    final_model.fit(final_fit[feature_columns], final_fit[target_column])
     xgb_prediction = final_model.predict(test[feature_columns])
 
     # Sequence windows end on their decision date. Validation and test windows
@@ -345,13 +351,13 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
     if best_epochs is None or best_lstm_validation_metrics is None:
         raise RuntimeError("Validation did not select an LSTM candidate")
 
-    development_sequence_index = development.index.intersection(sequence_index, sort=False)
-    development_sequence_positions = sequence_positions.loc[development_sequence_index].to_numpy()
-    development_log_returns = lstm_targets.loc[development_sequence_index]
+    final_fit_sequence_index = final_fit.index.intersection(sequence_index, sort=False)
+    final_fit_sequence_positions = sequence_positions.loc[final_fit_sequence_index].to_numpy()
+    final_fit_log_returns = lstm_targets.loc[final_fit_sequence_index]
     final_lstm = LSTMForecaster(epochs=best_epochs, **lstm_common_parameters)
     final_lstm.fit(
-        lstm_sequences[development_sequence_positions],
-        development_log_returns,
+        lstm_sequences[final_fit_sequence_positions],
+        final_fit_log_returns,
     )
     lstm_test_prediction = final_lstm.predict(
         lstm_sequences[test_sequence_positions],
@@ -361,13 +367,13 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
         lstm_test_prediction
     )
 
-    # The first test forecast is made after the 2024-12-31 close is known.
-    # That close is included in ARIMA history, but its 2025-01-01 target is not.
-    development_close = pd.to_numeric(
-        frame.loc[frame.index <= validation_end, "Close"], errors="raise"
+    # Final-fit parameters use labels through 2025-12-31. The first 2026
+    # one-day forecast is made after the 2025-12-31 close is observed.
+    final_fit_close = pd.to_numeric(
+        frame.loc[frame.index <= final_fit_end, "Close"], errors="raise"
     )
     arima_test_prediction = _rolling_arima_predictions(
-        development_close,
+        final_fit_close,
         test,
         order=arima_order,
         target_column=target_column,
@@ -382,25 +388,6 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
             "xgboost": xgb_prediction,
             "lstm": lstm_test_prediction,
         },
-    )
-
-    # Fit separate deployment bundles only after the held-out metrics have been
-    # computed. These bundles may learn from all labeled rows; they are not the
-    # models that produced the 2025 evaluation predictions above.
-    labeled_frame = frame.loc[frame[target_column].notna()]
-    if labeled_frame.empty:
-        raise ValueError("No labeled rows are available to fit deployment models")
-    deployment_xgboost = XGBoostForecaster(
-        n_estimators=best_estimators,
-        **common_params,
-    ).fit(labeled_frame[feature_columns], labeled_frame[target_column])
-    deployment_sequence_positions = sequence_positions.to_numpy()
-    deployment_lstm = LSTMForecaster(
-        epochs=best_epochs,
-        **lstm_common_parameters,
-    ).fit(
-        lstm_sequences[deployment_sequence_positions],
-        lstm_targets,
     )
 
     predictions = pd.DataFrame(
@@ -443,9 +430,10 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
                 "selected_n_estimators": best_estimators,
                 "selection_metric": selection_metric,
                 "fit_dates": {
-                    "first_decision_date": development.index[0],
-                    "last_decision_date": development.index[-1],
+                    "first_decision_date": final_fit.index[0],
+                    "last_decision_date": final_fit.index[-1],
                 },
+                "fit_target_end": final_fit_end,
                 "refit_during_test": False,
                 "parameters": {**common_params, "n_estimators": best_estimators},
             },
@@ -461,20 +449,21 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
                 "selected_epochs": best_epochs,
                 "selection_metric": lstm_selection_metric,
                 "sequence_length": lookback,
+                "fit_target_end": final_fit_end,
                 "target_transform": "predict log(next_close / current_close), then convert to USD close",
-                "scaling": "feature and target scalers fit on training sequences only during selection; refit on train+validation for final model",
+                "scaling": "feature and target scalers fit on final-fit sequences dated through the configured final-fit target end",
                 "refit_during_test": False,
                 "parameters": {**lstm_common_parameters, "epochs": best_epochs},
             },
         },
-        "deployment_models": {
-            "fit_after_test_evaluation": True,
+        "final_fit": {
+            "fit_after_validation_selection": True,
             "target_date_range": {
-                "first": labeled_frame["Target_Date"].min(),
-                "last": labeled_frame["Target_Date"].max(),
+                "first": final_fit["Target_Date"].min(),
+                "last": final_fit["Target_Date"].max(),
             },
-            "xgboost": "refit with validation-selected settings on all available labeled rows",
-            "lstm": "refit with validation-selected settings and training-only scalers on all available labeled sequences",
+            "target_end": final_fit_end,
+            "excludes_final_evaluation_rows": True,
         },
         "software_versions": {
             "python": platform.python_version(),
@@ -494,7 +483,7 @@ def run_experiment(config_path: Path, data_override: Path | None, output_root: P
         metrics=metrics,
         metadata=metadata,
         validation_scores=validation_scores,
-        models={"xgboost": deployment_xgboost, "lstm": deployment_lstm},
+        models={"xgboost": final_model, "lstm": final_lstm},
     )
 
 

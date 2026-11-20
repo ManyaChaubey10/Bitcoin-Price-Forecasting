@@ -1,48 +1,83 @@
-# BTC-USD Price Forecasting
+# BTC-USD Forecasting Lab
 
-This repository contains a reproducible daily Bitcoin close forecasting backend. It keeps the existing notebooks and data exports while moving reusable forecasting work into Python modules.
+A research platform for daily Bitcoin price forecasting. ARIMA, XGBoost, and LSTM remain independent model implementations. A separate validation-only router supports objective-specific automatic selection and explicit manual selection. Persistence is always included as a baseline.
 
-## Current capabilities
+## Research protocol
 
-- Validates and loads daily BTC-USD OHLCV data, builds causal technical and calendar features, and creates a next-day close target.
-- Runs a chronological one-day-ahead comparison of persistence, ARIMA, XGBoost, and LSTM against the same 2025 test dates.
-- Selects ARIMA order on training data only, and selects XGBoost estimator count and LSTM epoch count on 2024 validation data.
-- Fits learned preprocessing on training data during model selection, then refits the selected model on train plus validation before final test inference.
-- Saves per-date predictions, test metrics, validation candidate scores, configuration, input hash, and package versions in a unique run directory.
-- Provides a local FastAPI backend for readiness, model status, persistence, ARIMA, and one-day XGBoost/LSTM forecasts when saved bundles are available.
+| Use | Target dates | Rule |
+|---|---|---|
+| Model training | 2018-01-01 through 2023-12-31 | Chronological; no shuffling |
+| Validation and selection | 2024-01-01 through 2024-12-31 | Choose configurations and router decisions here |
+| Final model fit | Through 2025-12-31 | Refit selected settings after validation selection |
+| Final evaluation | Available 2026 targets only | Report once; never use these outcomes for tuning or routing |
 
-## Environment and experiment
+The current saved 2026 evaluation covers January 1 through November 14, 2026. The routed registry presently contains one-day validation scores only. The interface shows a validation-based automatic route only where that evidence exists. Manual selection can be used for other forecast horizons, but it is labeled as unvalidated. Automatic routing currently falls back to persistence because no learned-model gain has been established as reliable using paired validation uncertainty.
 
-Use Python `>=3.11,<3.13` (Python 3.12 recommended). From the repository root:
+The existing models were developed with a shared engineered table, so model-specific feature ablation has not yet been demonstrated. The registry does not contain 7-, 14-, or 30-day validation records. No ensemble is enabled because aligned per-date 2024 forecasts for all models are not saved. These are open research tasks, not assumed model strengths.
 
-```powershell
-uv python install 3.12
-uv sync --python 3.12 --extra api --extra arima --extra xgboost --extra lstm
-uv run python scripts\prepare_data.py
-uv run python scripts\run_experiment.py
+## Repository map
+
+```text
+configs/
+  default.yaml                 split, final-fit, and model settings
+  model_selection.json        validation-only routing evidence and provenance
+data/
+  raw/                         source OHLCV snapshots
+  processed/                   causal features used by saved ML artifacts
+notebooks/                     preserved educational and experiment notebooks
+src/btc_forecasting/
+  data.py, features.py         input validation and causal feature engineering
+  splitting.py, metrics.py     chronological partitions and shared scores
+  models/                       independent ARIMA, XGBoost, and LSTM adapters
+  selection.py                  validation-only model router
+  api/                          FastAPI services and response contracts
+scripts/
+  prepare_data.py, run_experiment.py
+frontend/                       React/Vite forecasting dashboard
+artifacts/runs/                 ignored, unique saved model and evaluation runs
 ```
 
-`prepare_data.py` downloads the configured range from yfinance by default, stores a timestamped raw snapshot under `data/raw/`, and writes causal features to `data/processed/bitcoin_features.csv`. It preserves existing processed outputs unless you explicitly pass `--overwrite-features`. Use `--source-csv` to build features from an existing OHLCV CSV. The experiment runner then reads the configured feature path. Use `--data`, `--config`, and `--output-root` to override runner paths. Relative paths resolve from the repository root.
+## Run locally
 
-The row dated *t* uses information available after candle *t* closes and predicts the close at *t+1*. Splits are based on target date: train through 2023-12-31, select settings in 2024, and reserve 2025 for the final evaluation. Test predictions are rolling one-step forecasts with fixed learned parameters; ARIMA updates its state after each observed close. The LSTM uses 30-day feature sequences and predicts log return, then converts the result to a close-price forecast. Every model is evaluated on the same test dates against the persistence baseline.
-
-Run artifacts are saved under `artifacts/runs/` and excluded from Git. The data exports currently contain engineered features and targets; they are not immutable raw OHLCV snapshots.
-
-## Run the API
-
-Install the API dependencies and start FastAPI from the repository root:
+Use Python 3.12 (the package supports Python 3.11–3.12) and Node.js 20 or newer. Keep the compatible environment separate from any existing `.venv`. From the repository root in PowerShell:
 
 ```powershell
-uv run python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src
+if (-not (Test-Path .venv312)) { uv venv .venv312 --python 3.12 }
+. .\.venv312\Scripts\Activate.ps1
+uv sync --active --locked --all-extras
 ```
 
-Open `http://127.0.0.1:8000/docs` for the interactive API description. Run data preparation and the experiment to create the raw snapshot, feature table, and deployable XGBoost/LSTM bundles. The API automatically uses the newest timestamped raw snapshot under `data/raw/` and latest run under `artifacts/runs/`. Set `BTC_FORECASTING_MODEL_RUN` to select a particular run and `BTC_FORECASTING_DATA` to override the raw snapshot. The feature table defaults to `data/processed/bitcoin_features.csv`; set `BTC_FORECASTING_FEATURES` to override it. XGBoost and LSTM currently support one-day-ahead forecasts only.
+The application uses the checked-in/local data and saved run artifacts. It does not train models on startup or download new data on startup. Start the backend in one terminal:
 
-## Project limitations and next work
+```powershell
+python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src
+```
 
-- The API does not support multi-day recursive XGBoost/LSTM inference because future OHLCV features are unknown.
-- The API uses the historical ARIMA order file and has no authenticated access, rate limiting, or live data refresh.
-- The checked-in feature CSVs duplicate processed data; preserving raw OHLCV and defining one canonical processed output remain follow-up tasks.
-- Add model artifact versioning and serving after reviewing the saved experiment results. Then build the frontend and deployment workflow.
+Start the React dashboard in another terminal:
 
-Keep the original preprocessing and ARIMA notebooks for exploration and historical reference. Use the shared package and script for repeatable experiments.
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the frontend terminal (normally `http://127.0.0.1:5173`). FastAPI documentation is at `http://127.0.0.1:8000/docs`. For a production bundle, run `npm run build` in `frontend/`; serve the generated `frontend/dist` with a static host configured to proxy `/api` to FastAPI.
+
+If using different local data, set `BTC_FORECASTING_DATA` and `BTC_FORECASTING_FEATURES` to compatible CSVs. `BTC_FORECASTING_MODEL_RUN` can point to an explicit artifact run directory. Model artifacts are matched to the registry's recorded artifact run by default; do not replace those files in place.
+
+## API overview
+
+- `GET /health`, `GET /ready`: service and daily-data readiness.
+- `GET /api/v1/models`: implementation, artifact readiness, and validated horizons.
+- `GET /api/v1/performance`: stored validation records only.
+- `GET /api/v1/history`: actual historical market series for the dashboard.
+- `GET /api/v1/evaluation`: saved final 2026 evaluation for display only; response states it is not used for selection.
+- `GET /api/v1/explainability`: saved model settings and available diagnostics.
+- `POST /api/v1/forecast`: automatic or manual forecasting.
+- `POST /api/v1/forecast/compare`: same-origin forecasts from available models and persistence.
+
+Automatic selection requires a matching objective/horizon validation record. The frontend does not extrapolate a one-day validation winner to longer horizons. XGBoost and LSTM currently have a validated inference feature contract for one-day forecasts. ARIMA can produce multi-step forecasts, but no multi-step validation record is currently available. Ensemble output remains disabled.
+
+## Demonstration guide
+
+See [DEMO_GUIDE.md](DEMO_GUIDE.md) for a presentation flow and scientific caveats. For the model/data protocol and current gaps, see [ARCHITECTURE.md](ARCHITECTURE.md).

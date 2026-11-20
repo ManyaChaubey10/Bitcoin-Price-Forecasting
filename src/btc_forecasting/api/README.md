@@ -1,44 +1,44 @@
 # Forecasting API
 
-This is a local development API for the BTC-USD project. It serves forecasts from the repository's current historical CSV; it does not download fresh market data. The configured default is `data/bitcoin_data.csv`. Set `BTC_FORECASTING_DATA` to use another CSV with a `Date` column and valid daily OHLCV columns. Relative values are resolved from the repository root; absolute paths are used as given.
+FastAPI serving layer for the local BTC-USD forecasting project. It loads the existing final-fit model bundles and data; it does not fetch market data or train models on application startup.
 
-## Install and run
+## Start
 
-Use a Python version allowed by the project (`>=3.11,<3.13`). From the repository root:
+From the repository root in PowerShell, create and activate a separate Python 3.12 environment, install locked dependencies, and start the service:
 
 ```powershell
-uv python install 3.12
-uv sync --python 3.12 --extra api --extra arima --extra xgboost --extra lstm
-uv run python scripts/prepare_data.py
-uv run python scripts/run_experiment.py
-uv run python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src
+if (-not (Test-Path .venv312)) { uv venv .venv312 --python 3.12 }
+. .\.venv312\Scripts\Activate.ps1
+uv sync --active --locked --all-extras
+python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src
 ```
 
-The interactive API description is available at `http://127.0.0.1:8000/docs` while the local server is running.
+Interactive API docs are at `http://127.0.0.1:8000/docs`. The React/Vite client is in `frontend/`; see the root README and `DEMO_GUIDE.md` for launch instructions.
 
 ## Endpoints
 
-- `GET /health` reports process health and whether the configured data file exists.
-- `GET /ready` loads and validates the configured daily OHLCV data; it returns `503` if the API cannot serve forecasts from that dataset.
-- `GET /api/v1/models` lists model implementation and dependency readiness.
-- `POST /api/v1/forecast` accepts a BTC-USD model name and a one-to-90-day horizon.
+- `GET /health`, `GET /ready`: process and configured data readiness.
+- `GET /api/v1/models`: model implementation, artifact readiness, and validation-backed horizons.
+- `GET /api/v1/performance`: scores from the stored validation-only registry.
+- `GET /api/v1/history`: actual historical market series for the dashboard.
+- `GET /api/v1/evaluation`: saved 2026 final-evaluation results for display only.
+- `GET /api/v1/explainability`: actual saved model configurations and available diagnostics.
+- `POST /api/v1/forecast`: automatic or manual model selection.
+- `POST /api/v1/forecast/compare`: forecasts from all ready models on the same origin.
 
-Example request:
+Example:
 
 ```json
 {
   "symbol": "BTC-USD",
-  "model": "persistence",
-  "horizon_days": 7
+  "model": "auto",
+  "objective": "price_rmse",
+  "horizon_days": 1
 }
 ```
 
-`persistence` repeats the latest observed close and serves as a baseline. `arima` fits the order recorded in `arima/arima_metrics.json` to the local close history. Both use the last date in the CSV as the forecast origin.
+The router reads `configs/model_selection.json`; it never reads final test metrics. Currently only one-day validation records exist. For an unsupported horizon, automatic selection is unavailable and the response explains that no validation record exists. Manual ARIMA/persistence multi-step forecasts are possible, but remain unvalidated. XGBoost/LSTM use the saved feature pipeline only for one-day predictions.
 
-`prepare_data.py` downloads the configured source range, saves a timestamped raw OHLCV snapshot in `data/raw/`, and writes `data/processed/bitcoin_features.csv`. It refuses to overwrite that feature file unless `--overwrite-features` is passed. The API automatically uses the newest raw snapshot and the configured feature table. Set `BTC_FORECASTING_DATA` or `BTC_FORECASTING_FEATURES` to choose paths manually.
+The configured protocol is training target dates through 2023-12-31, validation in 2024, final fit through 2025-12-31, and final evaluation on available 2026 targets (currently through 2026-11-14). The 2026 endpoint is display-only. `BTC_FORECASTING_DATA`, `BTC_FORECASTING_FEATURES`, and `BTC_FORECASTING_MODEL_RUN` can point to compatible local inputs or a specific model-run directory.
 
-XGBoost and LSTM require saved model bundles from a completed experiment run. The API selects the latest compatible directory under `artifacts/runs/` by default. Set `BTC_FORECASTING_MODEL_RUN` to a specific run directory when needed. The OHLCV and feature CSVs must end on the same date. These models currently serve one-day-ahead forecasts only because longer horizons need a defined future-feature strategy. The API returns a clear unavailable response when the bundle, dependency, or matching feature data is missing.
-
-Create model bundles by running `python scripts/run_experiment.py`. Test metrics are computed before separate deployment bundles are fit on all labeled rows; those bundles are intended for inference and must not be used to reproduce the held-out 2025 metrics.
-
-This API is a local development service. It has no authentication, rate limiting, CORS policy, live data refresh, or deployment configuration. Set those policies when the consuming application and hosting environment are defined.
+For gaps in feature optimization, horizon-specific validation, reliable paired comparisons, ensemble evaluation, and deployment, see `ARCHITECTURE.md`.
