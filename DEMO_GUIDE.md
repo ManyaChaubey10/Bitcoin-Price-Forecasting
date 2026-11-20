@@ -13,7 +13,7 @@ uv sync --active --locked --all-extras
 Terminal 1, start FastAPI:
 
 ```powershell
-python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src
+python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src --port 8001
 ```
 
 Terminal 2, start React:
@@ -24,7 +24,7 @@ npm install
 npm run dev
 ```
 
-Open the local Vite address printed in Terminal 2. The API's interactive interface is at `http://127.0.0.1:8000/docs`.
+Open the local Vite address printed in Terminal 2. The API's interactive interface is at `http://127.0.0.1:8001/docs`.
 
 The app reads the repository's saved data and model artifacts. It does not download data or train models at startup. If the saved bundles are missing in another checkout, the model cards will report that state; do not regenerate them over existing runs.
 

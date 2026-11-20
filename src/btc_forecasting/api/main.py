@@ -61,7 +61,7 @@ def models() -> ModelListResponse:
 @app.get("/api/v1/performance", tags=["forecasting"])
 def performance(
     objective: ForecastObjective | None = Query(default=None),
-    horizon_days: int | None = Query(default=None, ge=1, le=90),
+    horizon_days: int | None = Query(default=None, ge=1, le=3650),
 ) -> dict:
     """Return model scores from the saved validation-only registry."""
     try:
@@ -110,6 +110,8 @@ def forecast(request: ForecastRequest) -> ForecastResponse:
         return create_forecast(request)
     except ModelUnavailableError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (DataUnavailableError, ForecastUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -121,5 +123,7 @@ def forecast_comparison(request: ForecastRequest) -> ForecastComparisonResponse:
         return compare_forecasts(request)
     except ModelUnavailableError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (DataUnavailableError, ForecastUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

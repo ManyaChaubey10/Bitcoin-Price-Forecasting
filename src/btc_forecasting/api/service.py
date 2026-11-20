@@ -6,13 +6,14 @@ import importlib.util
 import json
 import os
 import pickle
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from ..data import load_ohlcv_csv
+from ..data import load_ohlcv_csv_through
+from ..features import make_features
 from ..metrics import evaluate_predictions
 from ..models.lstm import LSTMForecaster
 from ..models.xgboost_model import XGBoostForecaster
@@ -29,12 +30,11 @@ from .schemas import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATA_PATH = PROJECT_ROOT / "data" / "bitcoin_data.csv"
-DEFAULT_FEATURES_PATH = PROJECT_ROOT / "data" / "processed" / "bitcoin_features.csv"
 DEFAULT_RAW_DIRECTORY = PROJECT_ROOT / "data" / "raw"
 DEFAULT_RUNS_PATH = PROJECT_ROOT / "artifacts" / "runs"
 SELECTION_REGISTRY_PATH = PROJECT_ROOT / "configs" / "model_selection.json"
+FORECAST_CUTOFF = pd.Timestamp("2025-12-31")
 DATA_ENV_VAR = "BTC_FORECASTING_DATA"
-FEATURES_ENV_VAR = "BTC_FORECASTING_FEATURES"
 MODEL_RUN_ENV_VAR = "BTC_FORECASTING_MODEL_RUN"
 _MODEL_CACHE: dict[tuple[str, int], object] = {}
 
@@ -62,15 +62,6 @@ def data_path() -> Path:
         snapshots = sorted(DEFAULT_RAW_DIRECTORY.glob("*.csv")) if DEFAULT_RAW_DIRECTORY.is_dir() else []
         return snapshots[-1] if snapshots else DEFAULT_DATA_PATH
 
-    path = Path(configured).expanduser()
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-def features_path() -> Path:
-    """Return the processed feature table used by trained ML models."""
-    configured = os.environ.get(FEATURES_ENV_VAR)
-    if not configured:
-        return DEFAULT_FEATURES_PATH
     path = Path(configured).expanduser()
     return path if path.is_absolute() else PROJECT_ROOT / path
 
@@ -149,46 +140,6 @@ def _model_bundle(name: str) -> tuple[Path, dict]:
     return model_path, metadata
 
 
-def _load_feature_history(
-    path: Path,
-    *,
-    feature_columns: list[str],
-    expected_last_date: pd.Timestamp,
-) -> pd.DataFrame:
-    """Load the processed table and enforce its model-input schema and origin."""
-    if not path.is_file():
-        raise DataUnavailableError(
-            f"Processed model features are unavailable at {path}. Set {FEATURES_ENV_VAR}."
-        )
-    try:
-        frame = pd.read_csv(path)
-        if "Date" not in frame.columns:
-            raise ValueError("feature CSV must contain a Date column")
-        dates = pd.to_datetime(frame.pop("Date"), errors="raise", utc=True)
-        frame.index = dates.dt.tz_convert(None).dt.normalize()
-        frame.index.name = "Date"
-    except (OSError, ValueError, KeyError) as exc:
-        raise DataUnavailableError(f"Model feature table could not be loaded: {exc}") from exc
-
-    if frame.empty or frame.index.has_duplicates or not frame.index.is_monotonic_increasing:
-        raise DataUnavailableError("Model feature dates must be non-empty, unique, and chronological.")
-    if not frame.index[-1] == expected_last_date:
-        raise DataUnavailableError(
-            "OHLCV and processed feature data must end on the same date before forecasting."
-        )
-    missing = [column for column in feature_columns if column not in frame.columns]
-    if missing:
-        raise DataUnavailableError(f"Model feature table is missing columns: {', '.join(missing)}")
-
-    try:
-        values = frame.loc[:, feature_columns].apply(pd.to_numeric, errors="raise")
-    except (TypeError, ValueError) as exc:
-        raise DataUnavailableError(f"Model features must be numeric: {exc}") from exc
-    if not np.isfinite(values.to_numpy(dtype=float)).all():
-        raise DataUnavailableError("Latest model features contain missing or non-finite values.")
-    return values
-
-
 def _cached_model(name: str, path: Path, metadata: dict):
     cache_key = (str(path), path.stat().st_mtime_ns)
     if cache_key in _MODEL_CACHE:
@@ -239,7 +190,10 @@ def list_models() -> list[ModelStatus]:
             arima_detail = str(exc)
         else:
             arima_ready = True
-            arima_detail = "Loads the final-fit ARIMA artifact; later observed closes update state without refitting."
+            arima_detail = (
+                "Loads the saved final-fit ARIMA artifact ending 2025-12-31. "
+                "Multi-step forecasts are available, but only one-day validation evidence is recorded."
+            )
 
     ml_status: dict[str, tuple[bool, str]] = {}
     for name, dependencies in {
@@ -264,7 +218,8 @@ def list_models() -> list[ModelStatus]:
         else:
             ml_status[name] = (
                 True,
-                "Loads the selected saved model bundle and serves one-day-ahead forecasts.",
+                "Loads the saved final-fit bundle. One-day inference uses the production feature contract; "
+                "recursive multi-day forecasts are experimental.",
             )
 
     return [
@@ -318,16 +273,25 @@ def _saved_arima_order() -> tuple[int, int, int]:
 
 
 def _load_history() -> tuple[Path, pd.DataFrame]:
-    """Load and validate the configured daily OHLCV history."""
+    """Load OHLCV and enforce the fixed user-forecast information boundary.
+
+    The source snapshot may contain 2026 evaluation rows. Those rows are
+    deliberately excluded from every user-facing forecast and market summary.
+    """
     path = data_path()
     if not path.is_file():
         raise DataUnavailableError(
             f"Historical BTC data is unavailable. Set {DATA_ENV_VAR} to a CSV path."
         )
     try:
-        history = load_ohlcv_csv(path)
+        history = load_ohlcv_csv_through(path, FORECAST_CUTOFF)
     except (OSError, ValueError, KeyError) as exc:
         raise DataUnavailableError(f"Historical BTC data could not be loaded: {exc}") from exc
+    if history.empty or history.index[-1] != FORECAST_CUTOFF:
+        raise DataUnavailableError(
+            "Historical data must contain observations through the fixed forecast cutoff "
+            f"{FORECAST_CUTOFF.date()}."
+        )
     return path, history
 
 
@@ -355,11 +319,20 @@ def _feature_history_for(name: str, metadata: dict, history: pd.DataFrame) -> pd
     feature_columns = metadata.get("feature_columns")
     if not isinstance(feature_columns, list) or not feature_columns:
         raise ModelUnavailableError("The saved run does not contain a valid model feature schema.")
-    return _load_feature_history(
-        features_path(),
-        feature_columns=feature_columns,
-        expected_last_date=history.index[-1],
-    )
+    # Recreate features from the already cutoff-limited OHLCV history. This
+    # prevents a processed feature file containing 2026 rows from entering an
+    # inference path and keeps production features in sync with features.py.
+    features = make_features(history, drop_incomplete=False)
+    missing = [column for column in feature_columns if column not in features.columns]
+    if missing:
+        raise ModelUnavailableError(
+            f"The production feature builder is missing saved model columns: {', '.join(missing)}"
+        )
+    selected = features.loc[:, feature_columns].apply(pd.to_numeric, errors="coerce")
+    selected = selected.replace([np.inf, -np.inf], np.nan).dropna()
+    if selected.empty or selected.index[-1] != history.index[-1]:
+        raise DataUnavailableError("Causal model features do not reach the forecast cutoff date.")
+    return selected
 
 
 def _model_forecast(
@@ -399,27 +372,98 @@ def _model_forecast(
         interval = np.asarray(forecast.conf_int(alpha=0.05), dtype=float)
         return values, interval[:, 0], interval[:, 1]
 
-    if horizon_days != 1:
-        raise ModelUnavailableError(
-            f"{name} supports one-day forecasts only; future feature generation has not been validated."
-        )
-    feature_history = _feature_history_for(name, metadata, history)
-    assert feature_history is not None
+    feature_columns = metadata.get("feature_columns")
+    if not isinstance(feature_columns, list) or not feature_columns:
+        raise ModelUnavailableError("The saved run does not contain a valid model feature schema.")
+    sequence_length = (
+        int(metadata["model"]["lstm"]["sequence_length"]) if name == "lstm" else 1
+    )
+    simulated_history = history.copy()
+    values: list[float] = []
     try:
-        if name == "xgboost":
-            values = model.predict(feature_history.iloc[[-1]]).to_numpy(dtype=float)
-        elif name == "lstm":
-            sequence_length = int(metadata["model"]["lstm"]["sequence_length"])
-            if len(feature_history) < sequence_length:
-                raise ValueError("Feature history is shorter than the saved LSTM sequence length")
-            sequence = feature_history.tail(sequence_length).to_numpy(dtype=np.float32)[None, :, :]
-            predicted_log_return = float(model.predict(sequence).iloc[0])
-            values = np.asarray([float(close.iloc[-1]) * np.exp(predicted_log_return)])
-        else:
-            raise ModelUnavailableError(f"{name} is not an implemented forecasting model.")
+        for _ in range(horizon_days):
+            feature_history = _feature_history_for(name, metadata, simulated_history)
+            assert feature_history is not None
+            if name == "xgboost":
+                predicted_close = float(model.predict(feature_history.tail(1)).iloc[0])
+            elif name == "lstm":
+                if len(feature_history) < sequence_length:
+                    raise ValueError("Feature history is shorter than the saved LSTM sequence length")
+                sequence = feature_history.tail(sequence_length).to_numpy(dtype=np.float32)[None, :, :]
+                predicted_log_return = float(model.predict(sequence).iloc[0])
+                predicted_close = float(simulated_history["Close"].iloc[-1]) * np.exp(predicted_log_return)
+            else:
+                raise ModelUnavailableError(f"{name} is not an implemented forecasting model.")
+            if not np.isfinite(predicted_close) or predicted_close <= 0:
+                raise ValueError("model returned an invalid future close")
+            values.append(predicted_close)
+            previous_close = float(simulated_history["Close"].iloc[-1])
+            next_date = simulated_history.index[-1] + pd.Timedelta(days=1)
+            # Recursive ML horizons require unknown future OHLCV inputs. We
+            # create a synthetic candle from the predicted close and carry the
+            # latest known volume forward. This is explicitly experimental.
+            synthetic = pd.DataFrame(
+                {
+                    "Open": [previous_close],
+                    "High": [max(previous_close, predicted_close)],
+                    "Low": [min(previous_close, predicted_close)],
+                    "Close": [predicted_close],
+                    "Volume": [float(simulated_history["Volume"].iloc[-1])],
+                },
+                index=pd.DatetimeIndex([next_date], name="Date"),
+            )
+            simulated_history = pd.concat([simulated_history, synthetic])
     except (ValueError, RuntimeError, KeyError, OverflowError, FloatingPointError) as exc:
         raise ForecastUnavailableError(f"{name} forecast failed: {exc}") from exc
     return np.asarray(values, dtype=float).reshape(-1), None, None
+
+
+def _request_horizon(request: ForecastRequest) -> tuple[int, date]:
+    """Resolve a date-first request against the fixed 2025-12-31 origin."""
+    if request.target_date is not None:
+        target = pd.Timestamp(request.target_date)
+        if target <= FORECAST_CUTOFF:
+            raise ValueError(
+                f"Prediction date must be after the historical cutoff {FORECAST_CUTOFF.date()}."
+            )
+        horizon = int((target - FORECAST_CUTOFF).days)
+        if request.horizon_days is not None and request.horizon_days != horizon:
+            raise ValueError("target_date and horizon_days do not describe the same forecast date.")
+        if horizon > 3650:
+            raise ValueError("Prediction dates may be at most 10 years after the historical cutoff.")
+        return horizon, target.date()
+    horizon = request.horizon_days or 1
+    if horizon > 3650:
+        raise ValueError("Forecast horizon may not exceed 3650 days.")
+    return horizon, (FORECAST_CUTOFF + pd.Timedelta(days=horizon)).date()
+
+
+def _route_or_experimental_persistence(
+    registry: dict, *, objective: str, horizon_days: int,
+    available_models: set[str], manual_model: str | None = None,
+):
+    """Route from exact horizon evidence; use a disclosed baseline otherwise."""
+    try:
+        return select_model(
+            registry, objective=objective, horizon_days=horizon_days,
+            manual_model=manual_model, available_models=available_models,
+        )
+    except ValueError:
+        if manual_model is not None:
+            return select_model(
+                registry, objective=objective, horizon_days=horizon_days,
+                manual_model=manual_model,
+            )
+        from ..selection import ModelSelection
+        return ModelSelection(
+            objective=objective, horizon_days=horizon_days,
+            selected_model="persistence", selection_mode="automatic_experimental_fallback",
+            metric=None, score=None,
+            reason=(f"No 2024 validation evidence exists for {objective} at {horizon_days} day(s). "
+                    "Using the persistence baseline as an explicitly experimental fallback; "
+                    "no learned model is claimed reliable for this horizon."),
+            candidates=performance_for(registry, objective=objective, horizon_days=horizon_days),
+        )
 
 
 def _forecast_points(
@@ -429,8 +473,8 @@ def _forecast_points(
     upper: np.ndarray | None = None,
 ) -> list[ForecastPoint]:
     values = np.asarray(values, dtype=float).reshape(-1)
-    if not len(values) or not np.isfinite(values).all():
-        raise ForecastUnavailableError("A model returned empty or non-finite forecasts.")
+    if not len(values) or not np.isfinite(values).all() or np.any(values <= 0):
+        raise ForecastUnavailableError("A model returned empty, non-finite, or non-positive price forecasts.")
     if (lower is None) != (upper is None):
         raise ForecastUnavailableError("A model returned incomplete confidence intervals.")
     lower_values = None if lower is None else np.asarray(lower, dtype=float).reshape(-1)
@@ -621,6 +665,7 @@ def diagnostic_image_path(model_name: str, image_name: str) -> Path:
 
 def create_forecast(request: ForecastRequest) -> ForecastResponse:
     """Forecast with manual choice or validation-only automatic routing."""
+    horizon_days, requested_date = _request_horizon(request)
     path, history = _load_history()
     registry = _selection_registry()
     statuses = {status.name: status for status in list_models()}
@@ -629,27 +674,35 @@ def create_forecast(request: ForecastRequest) -> ForecastResponse:
             choice = select_model(
                 registry,
                 objective=request.objective,
-                horizon_days=request.horizon_days,
+                horizon_days=horizon_days,
                 available_models={name for name, status in statuses.items() if status.ready},
             )
-        except ValueError as exc:
-            raise ModelUnavailableError(str(exc)) from exc
+        except ValueError:
+            choice = _route_or_experimental_persistence(
+                registry, objective=request.objective, horizon_days=horizon_days,
+                available_models={name for name, status in statuses.items() if status.ready},
+            )
     else:
         if not statuses[request.model].ready:
             raise ModelUnavailableError(statuses[request.model].detail)
         choice = select_model(
             registry,
             objective=request.objective,
-            horizon_days=request.horizon_days,
+            horizon_days=horizon_days,
             manual_model=request.model,
         )
 
-    values, lower, upper = _model_forecast(choice.selected_model, request.horizon_days, history)
+    values, lower, upper = _model_forecast(choice.selected_model, horizon_days, history)
     points = _forecast_points(history.index[-1], values, lower, upper)
     return ForecastResponse(
         symbol=request.symbol,
         model=choice.selected_model,
-        horizon_days=request.horizon_days,
+        horizon_days=horizon_days,
+        requested_date=requested_date,
+        experimental_horizon=horizon_days not in {
+            int(row["horizon_days"]) for row in registry["records"]
+            if row.get("model") == choice.selected_model and row.get("objective") == request.objective
+        },
         generated_at_utc=datetime.now(timezone.utc),
         history_start=history.index[0].date(),
         history_end=history.index[-1].date(),
@@ -662,10 +715,11 @@ def create_forecast(request: ForecastRequest) -> ForecastResponse:
 
 def compare_forecasts(request: ForecastRequest) -> ForecastComparisonResponse:
     """Return same-origin forecasts for every ready model and the baseline."""
+    horizon_days, requested_date = _request_horizon(request)
     _, history = _load_history()
     registry = _selection_registry()
     objective_records = performance_for(
-        registry, objective=request.objective, horizon_days=request.horizon_days
+        registry, objective=request.objective, horizon_days=horizon_days
     )
     metric_by_model = {record["model"]: record for record in objective_records}
     statuses = {status.name: status for status in list_models()}
@@ -686,19 +740,8 @@ def compare_forecasts(request: ForecastRequest) -> ForecastComparisonResponse:
                 )
             )
             continue
-        if request.horizon_days > 1 and name in {"xgboost", "lstm"}:
-            result_rows.append(
-                ModelForecastResult(
-                    model=name,
-                    ready=True,
-                    supported=False,
-                    detail="Only one-day forecasts have a defined feature strategy and validation record.",
-                    validation_metrics=validation,
-                )
-            )
-            continue
         try:
-            values, lower, upper = _model_forecast(name, request.horizon_days, history)
+            values, lower, upper = _model_forecast(name, horizon_days, history)
             points = _forecast_points(history.index[-1], values, lower, upper)
         except (ModelUnavailableError, DataUnavailableError, ForecastUnavailableError) as exc:
             result_rows.append(
@@ -708,6 +751,7 @@ def compare_forecasts(request: ForecastRequest) -> ForecastComparisonResponse:
                     supported=False,
                     detail=str(exc),
                     validation_metrics=validation,
+                    experimental_horizon=horizon_days not in status.validated_horizons,
                 )
             )
             continue
@@ -717,9 +761,15 @@ def compare_forecasts(request: ForecastRequest) -> ForecastComparisonResponse:
                 model=name,
                 ready=True,
                 supported=True,
-                detail="Forecast generated from the same history end date.",
+                detail=(
+                    "Recursive ML forecast uses synthetic future candles and carries the last known "
+                    "volume forward; this horizon is experimental."
+                    if name in {"xgboost", "lstm"} and horizon_days > 1
+                    else "Forecast generated from the fixed 2025-12-31 history cutoff."
+                ),
                 forecasts=points,
                 validation_metrics=validation,
+                experimental_horizon=horizon_days not in status.validated_horizons,
             )
         )
 
@@ -729,17 +779,20 @@ def compare_forecasts(request: ForecastRequest) -> ForecastComparisonResponse:
             choice = select_model(
                 registry,
                 objective=request.objective,
-                horizon_days=request.horizon_days,
+                horizon_days=horizon_days,
                 available_models=forecastable,
             )
         except ValueError:
-            choice = None
+            choice = _route_or_experimental_persistence(
+                registry, objective=request.objective, horizon_days=horizon_days,
+                available_models=forecastable,
+            )
     else:
         if request.model in forecastable:
             choice = select_model(
                 registry,
                 objective=request.objective,
-                horizon_days=request.horizon_days,
+                horizon_days=horizon_days,
                 manual_model=request.model,
             )
         else:
@@ -749,7 +802,14 @@ def compare_forecasts(request: ForecastRequest) -> ForecastComparisonResponse:
     return ForecastComparisonResponse(
         symbol=request.symbol,
         objective=request.objective,
-        horizon_days=request.horizon_days,
+        horizon_days=horizon_days,
+        requested_date=requested_date,
+        experimental_horizon=(
+            True if choice is None else horizon_days not in {
+                int(row["horizon_days"]) for row in registry["records"]
+                if row.get("model") == choice.selected_model and row.get("objective") == request.objective
+            }
+        ),
         history_end=history.index[-1].date(),
         selected_model=choice.selected_model if choice else None,
         selection=choice.to_dict() if choice else None,

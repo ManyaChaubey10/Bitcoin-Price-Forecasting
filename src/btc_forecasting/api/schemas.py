@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ModelName = Literal["persistence", "arima", "xgboost", "lstm"]
 RequestedModel = Literal["auto", "persistence", "arima", "xgboost", "lstm"]
@@ -18,7 +18,23 @@ class ForecastRequest(BaseModel):
     symbol: Literal["BTC-USD"] = "BTC-USD"
     model: RequestedModel = "auto"
     objective: ForecastObjective = "price_rmse"
-    horizon_days: int = Field(default=1, ge=1, le=90)
+    # `target_date` powers the date-first product flow. `horizon_days` remains
+    # for API clients that already use the original horizon-based contract.
+    target_date: date | None = None
+    horizon_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @model_validator(mode="after")
+    def validate_requested_date(self) -> ForecastRequest:
+        if self.target_date is not None:
+            cutoff = date(2025, 12, 31)
+            if self.target_date <= cutoff:
+                raise ValueError(f"target_date must be after the fixed history cutoff {cutoff}.")
+            days = (self.target_date - cutoff).days
+            if days > 3650:
+                raise ValueError("target_date may be at most 10 years after the history cutoff.")
+            if self.horizon_days is not None and self.horizon_days != days:
+                raise ValueError("target_date and horizon_days must identify the same date.")
+        return self
 
 
 class ForecastPoint(BaseModel):
@@ -32,6 +48,8 @@ class ForecastResponse(BaseModel):
     symbol: Literal["BTC-USD"]
     model: ModelName
     horizon_days: int
+    requested_date: date
+    experimental_horizon: bool = False
     generated_at_utc: datetime
     history_start: date
     history_end: date
@@ -48,12 +66,15 @@ class ModelForecastResult(BaseModel):
     detail: str
     forecasts: list[ForecastPoint] = Field(default_factory=list)
     validation_metrics: dict | None = None
+    experimental_horizon: bool = False
 
 
 class ForecastComparisonResponse(BaseModel):
     symbol: Literal["BTC-USD"]
     objective: ForecastObjective
     horizon_days: int
+    requested_date: date
+    experimental_horizon: bool = False
     history_end: date
     selected_model: ModelName | None = None
     selection: dict | None = None

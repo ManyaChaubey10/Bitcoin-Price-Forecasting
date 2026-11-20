@@ -10,17 +10,17 @@ From the repository root in PowerShell, create and activate a separate Python 3.
 if (-not (Test-Path .venv312)) { uv venv .venv312 --python 3.12 }
 . .\.venv312\Scripts\Activate.ps1
 uv sync --active --locked --all-extras
-python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src
+python -m uvicorn btc_forecasting.api.main:app --reload --app-dir src --port 8001
 ```
 
-Interactive API docs are at `http://127.0.0.1:8000/docs`. The React/Vite client is in `frontend/`; see the root README and `DEMO_GUIDE.md` for launch instructions.
+Interactive API docs are at `http://127.0.0.1:8001/docs`. The React/Vite client is in `frontend/`; see the root README and `DEMO_GUIDE.md` for launch instructions.
 
 ## Endpoints
 
 - `GET /health`, `GET /ready`: process and configured data readiness.
 - `GET /api/v1/models`: model implementation, artifact readiness, and validation-backed horizons.
 - `GET /api/v1/performance`: scores from the stored validation-only registry.
-- `GET /api/v1/history`: actual historical market series for the dashboard.
+- `GET /api/v1/history`: historical market series through the fixed forecast cutoff.
 - `GET /api/v1/evaluation`: saved 2026 final-evaluation results for display only.
 - `GET /api/v1/explainability`: actual saved model configurations and available diagnostics.
 - `POST /api/v1/forecast`: automatic or manual model selection.
@@ -33,12 +33,12 @@ Example:
   "symbol": "BTC-USD",
   "model": "auto",
   "objective": "price_rmse",
-  "horizon_days": 1
+  "target_date": "2026-01-01"
 }
 ```
 
-The router reads `configs/model_selection.json`; it never reads final test metrics. Currently only one-day validation records exist. For an unsupported horizon, automatic selection is unavailable and the response explains that no validation record exists. Manual ARIMA/persistence multi-step forecasts are possible, but remain unvalidated. XGBoost/LSTM use the saved feature pipeline only for one-day predictions.
+The router reads `configs/model_selection.json`; it never reads final test metrics. Currently only one-day validation records exist. For other dates, automatic routing falls back to persistence and marks the forecast experimental. Manual ARIMA, XGBoost, and LSTM are also available; recursive ML projections synthesize future candles and carry forward the latest observed volume, so they remain experimental until multi-horizon validation is completed.
 
-The configured protocol is training target dates through 2023-12-31, validation in 2024, final fit through 2025-12-31, and final evaluation on available 2026 targets (currently through 2026-11-14). The 2026 endpoint is display-only. `BTC_FORECASTING_DATA`, `BTC_FORECASTING_FEATURES`, and `BTC_FORECASTING_MODEL_RUN` can point to compatible local inputs or a specific model-run directory.
+The forecast origin is fixed at 2025-12-31. Source snapshots may contain later actuals, but user-facing history and all forecast inputs are truncated before feature generation. Saved 2026 evaluation results (currently through 2026-11-14) are display-only. `BTC_FORECASTING_DATA` and `BTC_FORECASTING_MODEL_RUN` can point to a compatible OHLCV snapshot or a specific model run.
 
 For gaps in feature optimization, horizon-specific validation, reliable paired comparisons, ensemble evaluation, and deployment, see `ARCHITECTURE.md`.

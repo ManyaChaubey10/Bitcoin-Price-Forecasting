@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 import os
 
@@ -84,6 +85,39 @@ def load_ohlcv_csv(path: str | Path, *, require_daily: bool = True) -> pd.DataFr
     """Load an OHLCV CSV containing a ``Date`` column and validate it."""
     raw = pd.read_csv(path)
     return validate_ohlcv(raw, require_daily=require_daily)
+
+
+def load_ohlcv_csv_through(
+    path: str | Path,
+    end_date: str | pd.Timestamp,
+    *,
+    require_daily: bool = True,
+) -> pd.DataFrame:
+    """Read an ascending OHLCV CSV only through the requested calendar date.
+
+    Reading stops at the first later date. Price, volume, and other values in
+    later rows are not parsed or passed into validation or feature generation.
+    The CSV must be date-ordered, as produced by the project's data pipeline.
+    """
+    cutoff = pd.Timestamp(end_date).normalize()
+    rows: list[dict[str, object]] = []
+    input_path = Path(path)
+    with input_path.open("r", newline="", encoding="utf-8-sig") as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames is None or "Date" not in reader.fieldnames:
+            raise ValueError("OHLCV CSV must contain a Date column")
+        missing = [column for column in OHLCV_COLUMNS if column not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"Missing required OHLCV columns: {', '.join(missing)}")
+        for row in reader:
+            date_value = pd.to_datetime(row["Date"], errors="raise", utc=True)
+            day = date_value.normalize().tz_localize(None)
+            if day > cutoff:
+                break
+            rows.append({"Date": day, **{column: row[column] for column in OHLCV_COLUMNS}})
+    if not rows:
+        raise ValueError("OHLCV CSV has no rows on or before the requested cutoff")
+    return validate_ohlcv(pd.DataFrame(rows), require_daily=require_daily)
 
 
 def fetch_ohlcv(
